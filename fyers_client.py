@@ -7,6 +7,23 @@ import datetime as dt
 
 import config
 
+IST_OFFSET = dt.timedelta(hours=5, minutes=30)
+
+
+def _epoch_to_ist(epoch: int) -> dt.datetime:
+    """
+    Fyers epoch values are standard UTC unix timestamps. Converting with
+    dt.datetime.fromtimestamp() uses the machine's local timezone, which
+    happens to work on a box already set to IST but is WRONG on GitHub
+    Actions runners (UTC by default) -- it silently shifts every candle's
+    label by 5:30 and breaks every 09:30 / 09:45 / etc lookup, which then
+    falls back to "nearest candle" for almost every minute and produces
+    a flat PnL line. Always convert via UTC explicitly, then add the
+    fixed IST offset, so behaviour is identical on any runner regardless
+    of its local timezone.
+    """
+    return dt.datetime.utcfromtimestamp(epoch) + IST_OFFSET
+
 try:
     from fyers_apiv3 import fyersModel
 except ImportError:
@@ -28,16 +45,6 @@ def get_fyers_model():
         is_async=False,
         log_path="",
     )
-
-
-def _epoch(d: dt.date, hhmm: str) -> int:
-    h, m = map(int, hhmm.split(":"))
-    naive = dt.datetime(d.year, d.month, d.day, h, m, 0)
-    # Fyers historical endpoint expects epoch seconds in IST wall-clock
-    # (it internally treats range_from/range_to as IST); no timezone
-    # conversion library needed since we only ever hand it the same
-    # naive-IST epoch back for parsing.
-    return int(naive.timestamp())
 
 
 def fetch_1min_candles(fyers, symbol: str, trade_date: dt.date):
@@ -63,7 +70,7 @@ def fetch_1min_candles(fyers, symbol: str, trade_date: dt.date):
                 candles = []
                 for c in resp["candles"]:
                     epoch, o, h, l, cl, v = c
-                    t = dt.datetime.fromtimestamp(epoch)
+                    t = _epoch_to_ist(epoch)
                     candles.append({
                         "epoch": epoch,
                         "time": t.strftime("%H:%M"),
