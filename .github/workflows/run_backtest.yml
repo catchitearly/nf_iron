@@ -1,0 +1,41 @@
+name: Iron Condor Backtest
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backtest
+        env:
+          FYERS_CLIENT_ID: ${{ secrets.FYERS_CLIENT_ID }}
+          FYERS_ACCESS_TOKEN: ${{ secrets.FYERS_ACCESS_TOKEN }}
+        run: python iron_condor_backtest.py
+
+      - name: Build dashboard
+        run: python dashboard_generator.py
+
+      - name: Commit results and dashboard
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add results.json docs/index.html
+          git diff --cached --quiet || git commit -m "Update backtest results and dashboard [skip ci]"
+          git push
