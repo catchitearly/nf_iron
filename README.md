@@ -57,15 +57,25 @@ and check it matches a real symbol on Fyers.
 
 `delta_hedge.py` adds a Nifty-futures delta hedge overlay to reduce the intraday PnL whipsaws that come from unhedged directional exposure:
 
-- Every minute, it backs out each leg's **implied vol** from its live price (pure-python bisection), then computes each leg's **delta** and sums them into a net position delta.
-- If `abs(net delta)` exceeds `config.DELTA_BAND_LOTS` (in lots), it trades Nifty futures (proxied by spot price — see note in the module docstring) to flatten it, rounding **up** to at least 1 whole lot.
-- The hedge PnL is tracked separately and added to the option PnL to produce a `hedged_pnl` series alongside the original `pnl` series — both are plotted on the dashboard, plus diamond markers wherever a hedge trade fired.
+- Every minute, it backs out each leg's **implied vol** from its live price (pure-python bisection), computes each leg's **delta**, and sums them into a net position delta (smoothed over a short rolling window — see below).
+- **Two-tier hysteresis band** decides when to trade:
+  - While flat, it hedges as soon as `|net delta|` breaches the tight **entry band** (`DELTA_BAND_LOTS`, default 0.15 lots) — this is what makes it actually fire on real spot moves / greek imbalance, rather than sitting idle.
+  - Once hedged, it leaves the position alone until `|net delta|` breaches the wider **exit band** (`DELTA_REHEDGE_BAND_LOTS`, default 1.25 lots) before adjusting again.
+- Trade size always rounds **up** to at least 1 whole lot (futures can't trade fractional lots), plus a **cooldown** (`DELTA_HEDGE_COOLDOWN_MIN`) and **rolling smoothing** (`DELTA_SMOOTHING_WINDOW_MIN`) so single noisy minutes on illiquid strikes don't trigger extra trades.
+- Both `pnl` (unhedged) and `hedged_pnl` land in `results.json`; the dashboard plots both curves, with diamond markers at each hedge trade, a hedge-trades table, and summary cards (final hedged PnL, trade count).
 
-**Important finding from testing:** don't set `DELTA_BAND_LOTS` below `1.0`. Since a hedge trade must round up to a full lot, a band narrower than 1 lot causes the hedge to *overshoot* the imbalance it's correcting and immediately breach the band in the other direction — this produced constant flip-flopping in testing that made PnL choppier, not smoother (confirmed: stdev of minute-to-minute PnL went from 33 to 90 in one test run).
+**Why two bands, not one:** a hedge trade must round up to a full lot. If the entry and exit thresholds were the same tight number, the trade's own rounding overshoot would immediately breach the band in the other direction next minute — the position would flip-flop every minute instead of sitting still (hit exactly this bug in testing: minute-to-minute PnL stdev went from 33 to 90 with a single tight band). Keeping the exit band comfortably above the worst-case one-lot overshoot (`LOT_SIZE - entry_band`) fixes that — the module prints a warning at runtime if your configured bands don't leave enough margin.
 
-Also worth knowing: with the default 300pt/400pt vertical spread structure at 15 lots, net position delta naturally stays well under 1 lot even on a 300-500pt trend day — each vertical spread's delta is self-limiting. That means at the default settings, the hedge may rarely or never trigger, which is actually the correct/honest answer for this specific structure — its delta risk is small. If you want to see the hedge more active, either widen the verticals (e.g. `SHORT_OFFSET=400`, `HEDGE_OFFSET=600`) or scale up `NUM_LOTS` so a lot's worth of delta becomes a smaller fraction of your total exposure. I validated the hedge mechanism itself works correctly at larger scale (100 lots): it cut the max intraday PnL swing roughly in half in a strong-trend synthetic test.
+**Tuning it:**
+- Lower `DELTA_BAND_LOTS` (entry) → hedge fires on smaller imbalances, more sensitive to real moves.
+- Raise `DELTA_REHEDGE_BAND_LOTS` (exit) → fewer follow-up adjustments once hedged, but more residual drift tolerated.
+- Raise `DELTA_SMOOTHING_WINDOW_MIN` / `DELTA_HEDGE_COOLDOWN_MIN` → fewer trades if your real option quotes are noisy/illiquid; lower them for a snappier response if your data is clean and liquid.
 
-If the whipsaw you're seeing in your live 300/400 dashboard isn't explained by delta, it's more likely coming from gamma/vega/IV effects — a static delta hedge won't smooth those out; that would need a gamma-scalping or vega-hedge approach instead.
+Validated with synthetic BSM-priced data: a clean trending day fires exactly one well-timed trade with no chatter and meaningfully changes the day's PnL outcome; a day built with deliberately noisy per-minute IV (stress-testing illiquid-quote behavior) fires more often than ideal, but the smoothing/cooldown cut that roughly 7-8x versus without them. If your real dashboard shows excessive hedge trades, raise the smoothing window or cooldown before touching the bands.
+
+If the whipsaw persists even with hedging active, it's likely coming from gamma/vega/IV effects rather than delta — a delta hedge won't smooth those out; that would need a gamma-scalping or vega-hedge approach instead.
+
+## Local test (without GitHub Actions)
 
 
 ```bash

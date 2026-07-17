@@ -14,9 +14,15 @@ Each minute:
   3. Sum all 4 legs -> option_position_delta.
   4. total_delta = option_position_delta + current_hedge_position
      (futures delta is ~1 per unit, so the hedge just adds directly).
-  5. If abs(total_delta) exceeds the configured band, trade futures to
-     bring total_delta back to (near) zero. Trade size is rounded to the
-     nearest lot, since futures only trade in whole lots.
+  5. If abs(total_delta) breaches the active band, trade futures to bring
+     total_delta back to (near) zero. Trade size is rounded to the
+     nearest lot, since futures only trade in whole lots. Two bands are
+     used (hysteresis): a tight ENTRY band (config.DELTA_BAND_LOTS) while
+     flat, so real imbalance actually gets hedged, and a wider EXIT band
+     (config.DELTA_REHEDGE_BAND_LOTS) once hedged, so the hedge trade's
+     own one-lot rounding overshoot doesn't immediately trigger a
+     reversal next minute. See config.py for the numbers and the math
+     behind why exit > entry is required.
   6. Mark the *existing* hedge position to market against the minute's
      spot move (standard replication bookkeeping: pnl added this minute
      = hedge_position_before_this_minute * (spot_now - spot_prev)),
@@ -189,15 +195,19 @@ def run_delta_hedge_for_day(trade_date, minute_grid, spot_lookup, leg_price_look
     if not config.DELTA_HEDGE_ENABLED or not minute_grid:
         return [], [], 0.0, (unhedged_pnl_series[-1]["pnl"] if unhedged_pnl_series else None)
 
-    if config.DELTA_BAND_LOTS < 1.0:
+    band_enter_units = config.DELTA_BAND_LOTS * config.LOT_SIZE
+    band_exit_units = config.DELTA_REHEDGE_BAND_LOTS * config.LOT_SIZE
+
+    worst_case_overshoot = config.LOT_SIZE - band_enter_units
+    if band_exit_units <= worst_case_overshoot:
         print(
-            "  [warn] DELTA_BAND_LOTS=%.2f is below 1.0 -- since hedge trades "
-            "always round up to a whole lot, this will likely overshoot the "
-            "imbalance and flip-flop every minute instead of smoothing PnL."
-            % config.DELTA_BAND_LOTS
+            "  [warn] DELTA_REHEDGE_BAND_LOTS (%.2f lots = %.1f units) is not "
+            "comfortably above the worst-case one-lot overshoot (~%.1f units) "
+            "from DELTA_BAND_LOTS=%.2f -- you may still see some flip-flopping. "
+            "Consider raising DELTA_REHEDGE_BAND_LOTS."
+            % (config.DELTA_REHEDGE_BAND_LOTS, band_exit_units, worst_case_overshoot, config.DELTA_BAND_LOTS)
         )
 
-    band_units = config.DELTA_BAND_LOTS * config.LOT_SIZE
     r = config.RISK_FREE_RATE
 
     hedge_position = 0.0     # in underlying units (+long / -short futures)
@@ -206,6 +216,8 @@ def run_delta_hedge_for_day(trade_date, minute_grid, spot_lookup, leg_price_look
 
     hedge_trades = []
     hedged_series = []
+    option_delta_window = []   # rolling window for smoothing
+    minutes_since_last_trade = None
 
     unhedged_by_time = {p["time"]: p["pnl"] for p in unhedged_pnl_series}
 
@@ -218,18 +230,45 @@ def run_delta_hedge_for_day(trade_date, minute_grid, spot_lookup, leg_price_look
         hedge_pnl_cum += hedge_position * (spot - prev_spot)
         prev_spot = spot
 
-        # 2) recompute option position delta at this minute
+        # 2) recompute option position delta at this minute, smoothed over
+        #    a short rolling window to avoid reacting to single-minute
+        #    quote noise on illiquid strikes (wide bid/ask, stale prints)
         leg_prices = {leg_name: leg_price_lookup(leg_name, hhmm) for leg_name in leg_meta}
         if any(p is None for p in leg_prices.values()):
             continue
-        option_delta, _ = position_delta_at(
+        raw_option_delta, _ = position_delta_at(
             spot, leg_prices, leg_meta, trade_date, hhmm, expiry_date, r
         )
 
+        window = max(config.DELTA_SMOOTHING_WINDOW_MIN, 1)
+        option_delta_window.append(raw_option_delta)
+        if len(option_delta_window) > window:
+            option_delta_window.pop(0)
+        option_delta = sum(option_delta_window) / len(option_delta_window)
+
         total_delta = option_delta + hedge_position
 
-        # 3) rehedge only if outside the configured band
-        if abs(total_delta) > band_units:
+        if minutes_since_last_trade is not None:
+            minutes_since_last_trade += 1
+
+        # 3) two-tier hysteresis band:
+        #    - while flat (hedge_position == 0), trade as soon as |total_delta|
+        #      breaches the tighter ENTRY band -- this is what actually
+        #      catches real spot moves / greek imbalance instead of never
+        #      firing.
+        #    - once hedged, don't touch it again until |total_delta| breaches
+        #      the wider EXIT band. This absorbs the unavoidable one-lot
+        #      rounding overshoot from the entry trade so it doesn't
+        #      immediately trigger a reversal next minute (the flip-flop
+        #      bug from a single fixed band).
+        active_band = band_exit_units if hedge_position != 0 else band_enter_units
+
+        cooldown_ok = (
+            minutes_since_last_trade is None
+            or minutes_since_last_trade >= config.DELTA_HEDGE_COOLDOWN_MIN
+        )
+
+        if abs(total_delta) > active_band and cooldown_ok:
             trade_qty_raw = -total_delta
             # futures only trade in whole lots -- round AWAY from zero
             # (ceiling on magnitude) so a triggered hedge always trades
@@ -240,6 +279,7 @@ def run_delta_hedge_for_day(trade_date, minute_grid, spot_lookup, leg_price_look
             trade_qty = sign * lots_needed * config.LOT_SIZE
             if trade_qty != 0:
                 hedge_position += trade_qty
+                minutes_since_last_trade = 0
                 hedge_trades.append({
                     "time": hhmm,
                     "trade_qty": trade_qty,
