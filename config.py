@@ -22,8 +22,8 @@ END_DATE = date(2026, 7, 16)
 # EXPIRY  (hardcoded -- same expiry used to build all 4 option symbols
 # for every day in the range above)
 # ----------------------------------------------------------------------
-EXPIRY_DATE = date(2026, 7, 21)   # <-- set the option expiry date here
-IS_WEEKLY = True                 # True = weekly contract, False = monthly
+EXPIRY_DATE = date(2026, 7, 28)   # <-- set the option expiry date here
+IS_WEEKLY = False                 # True = weekly contract, False = monthly
 
 # ----------------------------------------------------------------------
 # SYMBOLS
@@ -35,8 +35,8 @@ UNDERLYING_NAME = "NIFTY"
 # STRATEGY PARAMETERS
 # ----------------------------------------------------------------------
 STRIKE_ROUND_STEP = 100     # freeze the 9:30 spot to nearest 100
-SHORT_OFFSET = 100          # sell leg distance from frozen strike
-HEDGE_OFFSET = 200          # buy (hedge) leg distance from frozen strike
+SHORT_OFFSET = 300          # sell leg distance from frozen strike
+HEDGE_OFFSET = 500          # buy (hedge) leg distance from frozen strike
                             # (100 pts beyond the short leg)
 
 LOT_SIZE = 65
