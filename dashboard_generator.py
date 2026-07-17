@@ -22,6 +22,24 @@ LEG_LABEL = {
 }
 
 
+def build_hedge_trades_table(hedge_trades):
+    if not hedge_trades:
+        return ""
+    rows = ""
+    for t in hedge_trades:
+        direction = "BUY futures" if t["trade_qty"] > 0 else "SELL futures"
+        rows += "<tr><td>%s</td><td>%s</td><td>%.0f</td><td>%.2f</td><td>%.1f</td></tr>" % (
+            t["time"], direction, abs(t["trade_qty"]), t["spot"], t["net_delta_before"],
+        )
+    return """
+  <div class="hedge-trades-title">Hedge trades this day</div>
+  <table class="legs-table">
+    <thead><tr><th>Time</th><th>Action</th><th>Qty (units)</th><th>Spot</th><th>Net Delta Before</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+""".format(rows=rows)
+
+
 def build_html(results):
     tab_buttons = []
     tab_panels = []
@@ -49,6 +67,30 @@ def build_html(results):
         pnl_class = "pnl-pos" if (final_pnl or 0) >= 0 else "pnl-neg"
         final_pnl_str = ("%.2f" % final_pnl) if final_pnl is not None else "N/A"
 
+        hedge_enabled = day.get("delta_hedge_enabled", False)
+        final_hedged_pnl = day.get("final_hedged_pnl")
+        hedged_pnl_class = "pnl-pos" if (final_hedged_pnl or 0) >= 0 else "pnl-neg"
+        final_hedged_pnl_str = ("%.2f" % final_hedged_pnl) if final_hedged_pnl is not None else "N/A"
+        num_hedge_trades = len(day.get("hedge_trades", []))
+
+        hedge_summary_cards = ""
+        if hedge_enabled:
+            hedge_summary_cards = """
+    <div class="summary-card">
+      <div class="summary-label">Final Hedged PnL</div>
+      <div class="summary-value {hedged_pnl_class}">{final_hedged_pnl_str}</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Hedge Trades (band {band} lot)</div>
+      <div class="summary-value">{num_hedge_trades}</div>
+    </div>
+""".format(
+                hedged_pnl_class=hedged_pnl_class,
+                final_hedged_pnl_str=final_hedged_pnl_str,
+                band=day.get("delta_band_lots", config.DELTA_BAND_LOTS),
+                num_hedge_trades=num_hedge_trades,
+            )
+
         panel_html = """
 <div class="tab-panel" id="tab-panel-{i}" style="display:{display_style};">
   <div class="summary-grid">
@@ -72,6 +114,7 @@ def build_html(results):
       <div class="summary-label">Final PnL</div>
       <div class="summary-value {pnl_class}">{final_pnl_str}</div>
     </div>
+    {hedge_summary_cards}
   </div>
 
   <table class="legs-table">
@@ -80,6 +123,7 @@ def build_html(results):
   </table>
 
   <div class="chart" id="chart-{i}"></div>
+  {hedge_trades_table}
 </div>
 """.format(
             i=i,
@@ -93,30 +137,71 @@ def build_html(results):
             pnl_class=pnl_class,
             final_pnl_str=final_pnl_str,
             legs_rows=legs_rows,
+            hedge_summary_cards=hedge_summary_cards,
+            hedge_trades_table=build_hedge_trades_table(day.get("hedge_trades", [])),
         )
         tab_panels.append(panel_html)
 
         times = [p["time"] for p in day["pnl_series"]]
         pnls = [p["pnl"] for p in day["pnl_series"]]
 
-        chart_scripts.append("""
-Plotly.newPlot('chart-{i}', [{{
-  x: {times},
-  y: {pnls},
+        hedged_series = day.get("hedged_series", [])
+        hedged_times = [h["time"] for h in hedged_series if h["hedged_pnl"] is not None]
+        hedged_pnls = [h["hedged_pnl"] for h in hedged_series if h["hedged_pnl"] is not None]
+        hedged_pnl_by_time = {h["time"]: h["hedged_pnl"] for h in hedged_series}
+
+        trade_times = [t["time"] for t in day.get("hedge_trades", [])]
+        trade_ys = [hedged_pnl_by_time.get(t["time"]) for t in day.get("hedge_trades", [])]
+        trade_texts = [
+            "%s%.0f units @ %.1f" % ("+" if t["trade_qty"] > 0 else "", t["trade_qty"], t["spot"])
+            for t in day.get("hedge_trades", [])
+        ]
+
+        traces = [
+            """{{
+  x: %s,
+  y: %s,
   type: 'scatter',
   mode: 'lines',
   line: {{color: '#3b82f6', width: 2}},
   fill: 'tozeroy',
-  fillcolor: 'rgba(59,130,246,0.1)',
-  name: 'PnL'
-}}], {{
+  fillcolor: 'rgba(59,130,246,0.08)',
+  name: 'Unhedged PnL'
+}}""" % (json.dumps(times), json.dumps(pnls))
+        ]
+
+        if hedged_times:
+            traces.append("""{{
+  x: %s,
+  y: %s,
+  type: 'scatter',
+  mode: 'lines',
+  line: {{color: '#34d399', width: 2, dash: 'solid'}},
+  name: 'Hedged PnL'
+}}""" % (json.dumps(hedged_times), json.dumps(hedged_pnls)))
+
+        if trade_times:
+            traces.append("""{{
+  x: %s,
+  y: %s,
+  type: 'scatter',
+  mode: 'markers',
+  marker: {{color: '#f59e0b', size: 8, symbol: 'diamond'}},
+  text: %s,
+  hovertemplate: '%%{{text}}<extra></extra>',
+  name: 'Hedge trades'
+}}""" % (json.dumps(trade_times), json.dumps(trade_ys), json.dumps(trade_texts)))
+
+        chart_scripts.append("""
+Plotly.newPlot('chart-{i}', [{traces}], {{
   margin: {{t: 20, r: 20, b: 40, l: 60}},
   xaxis: {{title: 'Time', tickangle: -45}},
   yaxis: {{title: 'PnL (INR)', zeroline: true, zerolinecolor: '#94a3b8', zerolinewidth: 1}},
   shapes: [{{type: 'line', x0: 0, x1: 1, xref: 'paper', y0: 0, y1: 0, line: {{color: '#94a3b8', width: 1, dash: 'dot'}}}}],
+  legend: {{orientation: 'h', y: -0.15}},
   height: 420
 }}, {{responsive: true}});
-""".format(i=i, times=json.dumps(times), pnls=json.dumps(pnls)))
+""".format(i=i, traces=",\n".join(traces)))
 
     html = """<!DOCTYPE html>
 <html lang="en">
@@ -188,11 +273,12 @@ Plotly.newPlot('chart-{i}', [{{
     border-bottom: 1px solid #1e293b;
   }}
   .legs-table th {{ color: #94a3b8; font-weight: 500; }}
+  .hedge-trades-title {{ font-size: 13px; color: #94a3b8; margin: 8px 0; }}
   .chart {{ width: 100%; }}
 </style>
 </head>
 <body>
-  <h1>Nifty Iron Condor Backtest -- Sell 300pt / Hedge 400pt</h1>
+  <h1>Nifty Iron Condor Backtest -- Sell {short_offset}pt / Hedge {hedge_offset}pt</h1>
   <div class="subtitle">
     {num_days} trading days &middot; Lot size {lot_size} &times; {num_lots} lots &middot;
     Entry 09:45 &middot; Exit 15:00 &middot; Expiry {expiry}
@@ -225,6 +311,8 @@ Plotly.newPlot('chart-{i}', [{{
         lot_size=config.LOT_SIZE,
         num_lots=config.NUM_LOTS,
         expiry=config.EXPIRY_DATE.strftime("%Y-%m-%d"),
+        short_offset=config.SHORT_OFFSET,
+        hedge_offset=config.HEDGE_OFFSET,
         tab_buttons="\n    ".join(tab_buttons),
         tab_panels="\n".join(tab_panels),
         chart_scripts="\n".join(chart_scripts),

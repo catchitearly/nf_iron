@@ -53,7 +53,20 @@ and check it matches a real symbol on Fyers.
 5. Every minute from 09:45 to 15:00: mark-to-market all 4 legs (nearest-candle fallback per leg), pnl = entry credit − current cost to close, × (lot size × lots).
 6. Days with no data at all (holidays, symbol errors) are skipped and logged.
 
-## Local test (without GitHub Actions)
+## Delta hedging (smooths the whipsaw)
+
+`delta_hedge.py` adds a Nifty-futures delta hedge overlay to reduce the intraday PnL whipsaws that come from unhedged directional exposure:
+
+- Every minute, it backs out each leg's **implied vol** from its live price (pure-python bisection), then computes each leg's **delta** and sums them into a net position delta.
+- If `abs(net delta)` exceeds `config.DELTA_BAND_LOTS` (in lots), it trades Nifty futures (proxied by spot price — see note in the module docstring) to flatten it, rounding **up** to at least 1 whole lot.
+- The hedge PnL is tracked separately and added to the option PnL to produce a `hedged_pnl` series alongside the original `pnl` series — both are plotted on the dashboard, plus diamond markers wherever a hedge trade fired.
+
+**Important finding from testing:** don't set `DELTA_BAND_LOTS` below `1.0`. Since a hedge trade must round up to a full lot, a band narrower than 1 lot causes the hedge to *overshoot* the imbalance it's correcting and immediately breach the band in the other direction — this produced constant flip-flopping in testing that made PnL choppier, not smoother (confirmed: stdev of minute-to-minute PnL went from 33 to 90 in one test run).
+
+Also worth knowing: with the default 300pt/400pt vertical spread structure at 15 lots, net position delta naturally stays well under 1 lot even on a 300-500pt trend day — each vertical spread's delta is self-limiting. That means at the default settings, the hedge may rarely or never trigger, which is actually the correct/honest answer for this specific structure — its delta risk is small. If you want to see the hedge more active, either widen the verticals (e.g. `SHORT_OFFSET=400`, `HEDGE_OFFSET=600`) or scale up `NUM_LOTS` so a lot's worth of delta becomes a smaller fraction of your total exposure. I validated the hedge mechanism itself works correctly at larger scale (100 lots): it cut the max intraday PnL swing roughly in half in a strong-trend synthetic test.
+
+If the whipsaw you're seeing in your live 300/400 dashboard isn't explained by delta, it's more likely coming from gamma/vega/IV effects — a static delta hedge won't smooth those out; that would need a gamma-scalping or vega-hedge approach instead.
+
 
 ```bash
 pip install -r requirements.txt

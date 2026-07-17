@@ -19,6 +19,7 @@ from fyers_client import (
     build_minute_price_map,
 )
 from symbol_builder import build_iron_condor_symbols
+import delta_hedge
 
 
 def round_to_nearest(value, step):
@@ -82,6 +83,8 @@ def run_day(fyers, trade_date):
         return None
 
     frozen_strike = round_to_nearest(freeze_candle["close"], config.STRIKE_ROUND_STEP)
+    spot_price_map = build_minute_price_map(spot_candles)
+    spot_sorted_times = sorted(spot_price_map.keys())
 
     legs = build_iron_condor_symbols(
         frozen_strike=frozen_strike,
@@ -141,6 +144,31 @@ def run_day(fyers, trade_date):
         pnl_rupees = pnl_per_unit * config.QTY
         pnl_series.append({"time": hhmm, "pnl": round(pnl_rupees, 2)})
 
+    # ------------------------------------------------------------------
+    # Delta hedge overlay (smooths the unhedged whipsaw above)
+    # ------------------------------------------------------------------
+    leg_meta = {
+        leg_name: {"strike": ld["strike"], "opt_type": legs[leg_name]["opt_type"]}
+        for leg_name, ld in leg_data.items()
+    }
+
+    def spot_lookup(hhmm):
+        return price_at_minute(spot_price_map, spot_sorted_times, hhmm)
+
+    def leg_price_lookup(leg_name, hhmm):
+        ld = leg_data[leg_name]
+        return price_at_minute(ld["price_map"], ld["sorted_times"], hhmm)
+
+    hedged_series, hedge_trades, final_hedge_pnl, final_hedged_pnl = delta_hedge.run_delta_hedge_for_day(
+        trade_date=trade_date,
+        minute_grid=minute_grid,
+        spot_lookup=spot_lookup,
+        leg_price_lookup=leg_price_lookup,
+        leg_meta=leg_meta,
+        unhedged_pnl_series=pnl_series,
+        expiry_date=config.EXPIRY_DATE,
+    )
+
     day_result = {
         "date": trade_date.strftime("%Y-%m-%d"),
         "frozen_strike": frozen_strike,
@@ -159,9 +187,15 @@ def run_day(fyers, trade_date):
         "entry_credit_total": round(entry_credit * config.QTY, 2),
         "final_pnl": pnl_series[-1]["pnl"] if pnl_series else None,
         "pnl_series": pnl_series,
+        "delta_hedge_enabled": config.DELTA_HEDGE_ENABLED,
+        "delta_band_lots": config.DELTA_BAND_LOTS,
+        "hedged_series": hedged_series,
+        "hedge_trades": hedge_trades,
+        "final_hedge_pnl": final_hedge_pnl,
+        "final_hedged_pnl": final_hedged_pnl,
     }
-    print("  frozen_strike=%s entry_credit/unit=%.2f final_pnl=%s" % (
-        frozen_strike, entry_credit, day_result["final_pnl"]))
+    print("  frozen_strike=%s entry_credit/unit=%.2f final_pnl=%s final_hedged_pnl=%s (%d hedge trades)" % (
+        frozen_strike, entry_credit, day_result["final_pnl"], final_hedged_pnl, len(hedge_trades)))
     return day_result
 
 
