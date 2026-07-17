@@ -40,7 +40,7 @@ HEDGE_OFFSET = 400          # buy (hedge) leg distance from frozen strike
                             # (100 pts beyond the short leg)
 
 LOT_SIZE = 65
-NUM_LOTS = 15
+NUM_LOTS = 35
 QTY = LOT_SIZE * NUM_LOTS   # total quantity per leg
 
 # ----------------------------------------------------------------------
