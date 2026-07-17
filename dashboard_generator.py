@@ -158,39 +158,39 @@ def build_html(results):
         ]
 
         traces = [
-            """{{
+            """{
   x: %s,
   y: %s,
   type: 'scatter',
   mode: 'lines',
-  line: {{color: '#3b82f6', width: 2}},
+  line: {color: '#3b82f6', width: 2},
   fill: 'tozeroy',
   fillcolor: 'rgba(59,130,246,0.08)',
   name: 'Unhedged PnL'
-}}""" % (json.dumps(times), json.dumps(pnls))
+}""" % (json.dumps(times), json.dumps(pnls))
         ]
 
         if hedged_times:
-            traces.append("""{{
+            traces.append("""{
   x: %s,
   y: %s,
   type: 'scatter',
   mode: 'lines',
-  line: {{color: '#34d399', width: 2, dash: 'solid'}},
+  line: {color: '#34d399', width: 2, dash: 'solid'},
   name: 'Hedged PnL'
-}}""" % (json.dumps(hedged_times), json.dumps(hedged_pnls)))
+}""" % (json.dumps(hedged_times), json.dumps(hedged_pnls)))
 
         if trade_times:
-            traces.append("""{{
+            traces.append("""{
   x: %s,
   y: %s,
   type: 'scatter',
   mode: 'markers',
-  marker: {{color: '#f59e0b', size: 8, symbol: 'diamond'}},
+  marker: {color: '#f59e0b', size: 8, symbol: 'diamond'},
   text: %s,
-  hovertemplate: '%%{{text}}<extra></extra>',
+  hovertemplate: '%%{text}<extra></extra>',
   name: 'Hedge trades'
-}}""" % (json.dumps(trade_times), json.dumps(trade_ys), json.dumps(trade_texts)))
+}""" % (json.dumps(trade_times), json.dumps(trade_ys), json.dumps(trade_texts)))
 
         chart_scripts.append("""
 Plotly.newPlot('chart-{i}', [{traces}], {{
