@@ -16,7 +16,7 @@ FYERS_ACCESS_TOKEN = os.environ.get("FYERS_ACCESS_TOKEN", "")
 # DATE RANGE  (hardcode the backtest window here)
 # ----------------------------------------------------------------------
 START_DATE = date(2026, 7, 14)
-END_DATE = date(2026, 7, 16)
+END_DATE = date(2026, 7, 17)
 
 # ----------------------------------------------------------------------
 # EXPIRY  (hardcoded -- same expiry used to build all 4 option symbols
